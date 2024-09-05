@@ -103,4 +103,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  uint64 interval;           // 定时器间隔
+  void (*handler)();   // 定时器触发的处理函数
+  uint64 spend;                // 已经过了多少个ticks
+
+  //alarm test1/2
+  struct trapframe *trapframeSave;  // 保存被中断时的寄存器和状态
+  int waitReturn;          // 是否正在等待定时器处理函数返回
 };
