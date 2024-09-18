@@ -41,14 +41,32 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
   int n;
 
-  if(argint(0, &n) < 0)
+  if(argint(0, &n) < 0)//通过argint(0, &n)获取参数n，作为增加或减少虚拟内存的量度
     return -1;
-  addr = myproc()->sz;
+  
+  struct proc *p = myproc();
+  uint addr = p->sz;
+  uint64 newSize = addr + n;
+
+  if(newSize >= MAXVA)
+      return addr;  
+  
+  if(n < 0) {
+      if(newSize > addr) {
+          newSize = 0;
+          uvmunmap(p->pagetable, 0, PGROUNDUP(addr) / PGSIZE, 1);
+      } else {
+          uvmunmap(p->pagetable, PGROUNDUP(newSize), (PGROUNDUP(addr) - PGROUNDUP(newSize)) / PGSIZE, 1);
+      }
+  }
+
+  p->sz = newSize;  
+  /*要去除的地方
   if(growproc(n) < 0)
     return -1;
+  */
   return addr;
 }
 
