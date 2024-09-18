@@ -15,6 +15,8 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+//添加引用计数
+int refNum[32768];
 /*
  * create a direct-map page table for the kernel.
  */
@@ -159,6 +161,11 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+
+    //这里实现跟踪物理页引用次数逻辑的代码
+    if(pa>=KERNBASE){//映射的物理地址大于这个就表示这些页 是在内核态中使用的
+      refNum[(pa - KERNBASE) / PGSIZE] += 1;
+    }
     if(a == last)
       break;
     a += PGSIZE;
@@ -186,8 +193,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    //这个时候是页表与物理页解绑，那么跟踪的物理页次数就要减一
+    //这里实现跟踪物理页引用次数逻辑的代码
+    uint64 pa = PTE2PA(*pte);
+    if(pa>=KERNBASE){//映射的物理地址大于这个就表示这些页 是在内核态中使用的
+      refNum[(pa - KERNBASE) / PGSIZE] -= 1;
+    }
     if(do_free){
-      uint64 pa = PTE2PA(*pte);
+      //uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
     *pte = 0;
@@ -311,20 +324,29 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    
     pa = PTE2PA(*pte);
+    //添加对pte清除PTE_W标志页
+    *pte = *pte & ~PTE_W;
+    //对pte添加PTE_COW标志页
+    *pte = *pte | PTE_COW;
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    //取消赋值物理页的操作
+    /*if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
       kfree(mem);
+      goto err;
+    }*/
+    if(mappages(new,i,PGSIZE,pa,flags)!=0){
       goto err;
     }
   }
@@ -361,6 +383,32 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+    //这里处理写时复制页面
+    pte_t *pte;
+    if ((pte = walk(pagetable, va0, 0)) == 0)
+            return -1;
+
+        if(*pte & PTE_COW) {
+            char *mem;
+            uint flags;
+            if (refNum[(pa0 - KERNBASE)/PGSIZE] == 2) {
+                *pte = *pte | PTE_W;
+                *pte = *pte & ~PTE_COW;
+            } else {
+                if ((mem = kalloc()) == 0) {
+                    return -1;
+                } else {
+                    refNum[(pa0 - KERNBASE)/PGSIZE] -= 1;
+                    memmove(mem, (char*)pa0, PGSIZE);
+                    *pte = *pte | PTE_W;
+                    *pte = *pte & ~PTE_COW;
+                    flags = PTE_FLAGS(*pte);
+                    *pte = PA2PTE((uint64)mem) | flags;
+                    refNum[((uint64)mem - KERNBASE)/PGSIZE] += 1;
+                    pa0 = (uint64)mem;
+                }
+            }
+        }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
